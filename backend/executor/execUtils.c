@@ -79,9 +79,9 @@ static void ShutdownExprContext(ExprContext *econtext, bool isCommit);
  * ----------------
  */
 EState *
-CreateExecutorState(void)
+CreateExecutorState(void)//构建EState
 {
-	EState	   *estate;
+	EState	   *estate;//EState指针
 	MemoryContext qcontext;
 	MemoryContext oldcontext;
 
@@ -90,19 +90,20 @@ CreateExecutorState(void)
 	 */
 	qcontext = AllocSetContextCreate(CurrentMemoryContext,
 									 "ExecutorState",
-									 ALLOCSET_DEFAULT_SIZES);
+									 ALLOCSET_DEFAULT_SIZES);//创建MemoryContext
 
 	/*
 	 * Make the EState node within the per-query context.  This way, we don't
 	 * need a separate pfree() operation for it at shutdown.
 	 */
-	oldcontext = MemoryContextSwitchTo(qcontext);
+	oldcontext = MemoryContextSwitchTo(qcontext);//切换至新创建的MemoryContext
 
-	estate = makeNode(EState);
+	estate = makeNode(EState);//创建Node
 
 	/*
 	 * Initialize all fields of the Executor State structure
 	 */
+    //初始化Executor State structure
 	estate->es_direction = ForwardScanDirection;
 	estate->es_snapshot = InvalidSnapshot;	/* caller must initialize this */
 	estate->es_crosscheck_snapshot = InvalidSnapshot;	/* no crosscheck */
@@ -166,7 +167,7 @@ CreateExecutorState(void)
 	/*
 	 * Return the executor state structure
 	 */
-	MemoryContextSwitchTo(oldcontext);
+	MemoryContextSwitchTo(oldcontext);//切换回上下文
 
 	return estate;
 }

@@ -23,6 +23,7 @@
  * the node numbers are never stored on disk.  But don't do it in a released
  * branch, because that would represent an ABI break for extensions.
  */
+//节点标记，枚举类型
 typedef enum NodeTag
 {
 	T_Invalid = 0,

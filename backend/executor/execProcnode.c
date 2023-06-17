@@ -136,6 +136,7 @@ static bool ExecShutdownNode_walker(PlanState *node, void *context);
  *		Returns a PlanState node corresponding to the given Plan node.
  * ------------------------------------------------------------------------
  */
+//初始化节点，返回Plan状态
 PlanState *
 ExecInitNode(Plan *node, EState *estate, int eflags)
 {
@@ -171,7 +172,7 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 													  estate, eflags);
 			break;
 
-		case T_ModifyTable:
+		case T_ModifyTable://插入数据
 			result = (PlanState *) ExecInitModifyTable((ModifyTable *) node,
 													   estate, eflags);
 			break;

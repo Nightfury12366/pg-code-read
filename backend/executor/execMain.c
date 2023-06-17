@@ -128,19 +128,19 @@ static void EvalPlanQualStart(EPQState *epqstate, EState *parentestate,
  * ----------------------------------------------------------------
  */
 void
-ExecutorStart(QueryDesc *queryDesc, int eflags)
+ExecutorStart(QueryDesc *queryDesc, int eflags)//eflags见后
 {
 	if (ExecutorStart_hook)
-		(*ExecutorStart_hook) (queryDesc, eflags);
+		(*ExecutorStart_hook) (queryDesc, eflags);//提供了钩子函数
 	else
-		standard_ExecutorStart(queryDesc, eflags);
+		standard_ExecutorStart(queryDesc, eflags);//标准函数
 }
 
 void
-standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
+standard_ExecutorStart(QueryDesc *queryDesc, int eflags)//标准函数
 {
-	EState	   *estate;
-	MemoryContext oldcontext;
+	EState	   *estate;//执行器状态信息
+	MemoryContext oldcontext;//原内存上下文
 
 	/* sanity checks: queryDesc must not be started already */
 	Assert(queryDesc != NULL);
@@ -168,18 +168,18 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
 	/*
 	 * Build EState, switch into per-query memory context for startup.
 	 */
-	estate = CreateExecutorState();
+	estate = CreateExecutorState();//创建执行器状态信息
 	queryDesc->estate = estate;
 
-	oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
+	oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);//切换上下文
 
 	/*
 	 * Fill in external parameters, if any, from queryDesc; and allocate
 	 * workspace for internal parameters
 	 */
-	estate->es_param_list_info = queryDesc->params;
+	estate->es_param_list_info = queryDesc->params;//设置参数
 
-	if (queryDesc->plannedstmt->paramExecTypes != NIL)
+	if (queryDesc->plannedstmt->paramExecTypes != NIL)//TODO
 	{
 		int			nParamExec;
 
@@ -188,19 +188,19 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
 			palloc0(nParamExec * sizeof(ParamExecData));
 	}
 
-	estate->es_sourceText = queryDesc->sourceText;
+	estate->es_sourceText = queryDesc->sourceText;//源SQL语句
 
 	/*
 	 * Fill in the query environment, if any, from queryDesc.
 	 */
-	estate->es_queryEnv = queryDesc->queryEnv;
+	estate->es_queryEnv = queryDesc->queryEnv;//查询环境
 
 	/*
 	 * If non-read-only query, set the command ID to mark output tuples with
 	 */
 	switch (queryDesc->operation)
 	{
-		case CMD_SELECT:
+		case CMD_SELECT://查询语句 TODO
 
 			/*
 			 * SELECT FOR [KEY] UPDATE/SHARE and modifying CTEs need to mark
@@ -220,7 +220,7 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
 				eflags |= EXEC_FLAG_SKIP_TRIGGERS;
 			break;
 
-		case CMD_INSERT:
+		case CMD_INSERT://插入语句
 		case CMD_DELETE:
 		case CMD_UPDATE:
 			estate->es_output_cid = GetCurrentCommandId(true);
@@ -251,7 +251,7 @@ standard_ExecutorStart(QueryDesc *queryDesc, int eflags)
 	/*
 	 * Initialize the plan state tree
 	 */
-	InitPlan(queryDesc, eflags);
+	InitPlan(queryDesc, eflags);//初始化Plan State tree
 
 	MemoryContextSwitchTo(oldcontext);
 }
@@ -581,7 +581,7 @@ ExecCheckRTPerms(List *rangeTable, bool ereport_on_violation)
 	{
 		RangeTblEntry *rte = (RangeTblEntry *) lfirst(l);
 
-		result = ExecCheckRTEPerms(rte);
+		result = ExecCheckRTEPerms(rte);//基于ACL Mode的权限检查
 		if (!result)
 		{
 			Assert(rte->rtekind == RTE_RELATION);
@@ -809,20 +809,20 @@ ExecCheckXactReadOnly(PlannedStmt *plannedstmt)
 static void
 InitPlan(QueryDesc *queryDesc, int eflags)
 {
-	CmdType		operation = queryDesc->operation;
-	PlannedStmt *plannedstmt = queryDesc->plannedstmt;
-	Plan	   *plan = plannedstmt->planTree;
-	List	   *rangeTable = plannedstmt->rtable;
-	EState	   *estate = queryDesc->estate;
-	PlanState  *planstate;
-	TupleDesc	tupType;
+	CmdType		operation = queryDesc->operation;//操作类型
+	PlannedStmt *plannedstmt = queryDesc->plannedstmt;//已规划的Statement
+	Plan	   *plan = plannedstmt->planTree;//执行计划
+	List	   *rangeTable = plannedstmt->rtable;//本次执行涉及的Table
+	EState	   *estate = queryDesc->estate;//执行状态
+	PlanState  *planstate;//计划状态
+	TupleDesc	tupType;//Tuple信息
 	ListCell   *l;
 	int			i;
 
 	/*
 	 * Do permissions checks
 	 */
-	ExecCheckRTPerms(rangeTable, true);
+	ExecCheckRTPerms(rangeTable, true);//权限检查
 
 	/*
 	 * initialize the node's execution state
@@ -836,6 +836,7 @@ InitPlan(QueryDesc *queryDesc, int eflags)
 	 * We must do this before initializing the plan tree, else we might try to
 	 * do a lock upgrade if a result rel is also a source rel.
 	 */
+    //初始化结果Relation
 	if (plannedstmt->resultRelations)
 	{
 		List	   *resultRelations = plannedstmt->resultRelations;

@@ -2340,13 +2340,13 @@ ExecModifyTable(PlanState *pstate)
 ModifyTableState *
 ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 {
-	ModifyTableState *mtstate;
-	CmdType		operation = node->operation;
-	int			nplans = list_length(node->plans);
+	ModifyTableState *mtstate;//返回结果
+	CmdType		operation = node->operation;//操作类型
+	int			nplans = list_length(node->plans);//节点中的plan个数
 	ResultRelInfo *saved_resultRelInfo;
-	ResultRelInfo *resultRelInfo;
-	Plan	   *subplan;
-	ListCell   *l;
+	ResultRelInfo *resultRelInfo;//结果Relation信息
+	Plan	   *subplan;//子Plan
+	ListCell   *l;//临时变量
 	int			i;
 	Relation	rel;
 	bool		update_tuple_routing_needed = node->partColsUpdated;
@@ -2357,17 +2357,17 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	/*
 	 * create state structure
 	 */
-	mtstate = makeNode(ModifyTableState);
-	mtstate->ps.plan = (Plan *) node;
-	mtstate->ps.state = estate;
-	mtstate->ps.ExecProcNode = ExecModifyTable;
+	mtstate = makeNode(ModifyTableState);//构建节点
+	mtstate->ps.plan = (Plan *) node;//设置Plan
+	mtstate->ps.state = estate;//设置执行状态
+	mtstate->ps.ExecProcNode = ExecModifyTable;//设置处理函数为ExecModifyTable
 
-	mtstate->operation = operation;
+	mtstate->operation = operation;//操作类型
 	mtstate->canSetTag = node->canSetTag;
 	mtstate->mt_done = false;
 
-	mtstate->mt_plans = (PlanState **) palloc0(sizeof(PlanState *) * nplans);
-	mtstate->resultRelInfo = estate->es_result_relations + node->resultRelIndex;
+	mtstate->mt_plans = (PlanState **) palloc0(sizeof(PlanState *) * nplans);//分配内存
+	mtstate->resultRelInfo = estate->es_result_relations + node->resultRelIndex;//结果Relation信息
 
 	/* If modifying a partitioned table, initialize the root table info */
 	if (node->rootResultRelIndex >= 0)
@@ -2393,6 +2393,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 
 	resultRelInfo = mtstate->resultRelInfo;
 	i = 0;
+    //初始化每个子Plan，保存在mt_plans数组中
 	foreach(l, node->plans)
 	{
 		subplan = (Plan *) lfirst(l);
@@ -2419,13 +2420,14 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 			operation != CMD_DELETE &&
 			resultRelInfo->ri_IndexRelationDescs == NULL)
 			ExecOpenIndices(resultRelInfo,
-							node->onConflictAction != ONCONFLICT_NONE);
+							node->onConflictAction != ONCONFLICT_NONE);//初始化Index
 
-		/*
-		 * If this is an UPDATE and a BEFORE UPDATE trigger is present, the
-		 * trigger itself might modify the partition-key values. So arrange
-		 * for tuple routing.
-		 */
+
+        /*
+         * If this is an UPDATE and a BEFORE UPDATE trigger is present, the
+         * trigger itself might modify the partition-key values. So arrange
+         * for tuple routing.
+         */
 		if (resultRelInfo->ri_TrigDesc &&
 			resultRelInfo->ri_TrigDesc->trig_update_before_row &&
 			operation == CMD_UPDATE)
@@ -2433,7 +2435,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 
 		/* Now init the plan for this result rel */
 		estate->es_result_relation_info = resultRelInfo;
-		mtstate->mt_plans[i] = ExecInitNode(subplan, estate, eflags);
+		mtstate->mt_plans[i] = ExecInitNode(subplan, estate, eflags);//初始化子节点
 
 		/* Also let FDWs init themselves for foreign-table result rels */
 		if (!resultRelInfo->ri_usesFdwDirectModify &&
@@ -2498,6 +2500,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	 */
 	resultRelInfo = mtstate->resultRelInfo;
 	i = 0;
+    //设置Check选项
 	foreach(l, node->withCheckOptionLists)
 	{
 		List	   *wcoList = (List *) lfirst(l);

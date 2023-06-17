@@ -280,6 +280,7 @@ static void AllocSetStats(MemoryContext context,
 static void AllocSetCheck(MemoryContext context);
 #endif
 
+//预定义
 /*
  * This is the virtual function table for AllocSet contexts.
  */
@@ -387,23 +388,23 @@ AllocSetFreeIndex(Size size)
  * AllocSetContextCreate.
  */
 MemoryContext
-AllocSetContextCreateExtended(MemoryContext parent,
-							  const char *name,
-							  Size minContextSize,
-							  Size initBlockSize,
-							  Size maxBlockSize)
+AllocSetContextCreateExtended(MemoryContext parent,//上一级的内存上下文
+							  const char *name,//MemoryContext名称
+							  Size minContextSize,//最小大小
+							  Size initBlockSize,//初始化大小
+							  Size maxBlockSize)//最大大小
 {
-	int			freeListIndex;
-	Size		firstBlockSize;
-	AllocSet	set;
-	AllocBlock	block;
+	int			freeListIndex;//空闲列表索引
+	Size		firstBlockSize;//第一个Block的Size
+	AllocSet	set;//AllocSetContext指针
+	AllocBlock	block;//Context中的Block
 
 	/* Assert we padded AllocChunkData properly */
 	StaticAssertStmt(ALLOC_CHUNKHDRSZ == MAXALIGN(ALLOC_CHUNKHDRSZ),
-					 "sizeof(AllocChunkData) is not maxaligned");
+					 "sizeof(AllocChunkData) is not maxaligned");//对齐
 	StaticAssertStmt(offsetof(AllocChunkData, aset) + sizeof(MemoryContext) ==
 					 ALLOC_CHUNKHDRSZ,
-					 "padding calculation in AllocChunkData is wrong");
+					 "padding calculation in AllocChunkData is wrong");//对齐
 
 	/*
 	 * First, validate allocation parameters.  Once these were regular runtime
@@ -411,6 +412,7 @@ AllocSetContextCreateExtended(MemoryContext parent,
 	 * varies their parameters at runtime.  We somewhat arbitrarily enforce a
 	 * minimum 1K block size.
 	 */
+    //验证参数
 	Assert(initBlockSize == MAXALIGN(initBlockSize) &&
 		   initBlockSize >= 1024);
 	Assert(maxBlockSize == MAXALIGN(maxBlockSize) &&
@@ -432,39 +434,42 @@ AllocSetContextCreateExtended(MemoryContext parent,
 			 initBlockSize == ALLOCSET_SMALL_INITSIZE)
 		freeListIndex = 1;
 	else
-		freeListIndex = -1;
+		freeListIndex = -1;//默认为-1
 
 	/*
 	 * If a suitable freelist entry exists, just recycle that context.
 	 */
-	if (freeListIndex >= 0)
+	if (freeListIndex >= 0)//SMALL/DEFAULT值
 	{
-		AllocSetFreeList *freelist = &context_freelists[freeListIndex];
+        //使用预定义的freelist
+        AllocSetFreeList *freelist = &context_freelists[freeListIndex];
 
 		if (freelist->first_free != NULL)
 		{
 			/* Remove entry from freelist */
-			set = freelist->first_free;
-			freelist->first_free = (AllocSet) set->header.nextchild;
-			freelist->num_free--;
+			set = freelist->first_free;//使用第一个空闲的AllocSetContext
+			freelist->first_free = (AllocSet) set->header.nextchild;//指针指向下一个空闲的AllocSetContext
+			freelist->num_free--;//free计数器减一
 
 			/* Update its maxBlockSize; everything else should be OK */
-			set->maxBlockSize = maxBlockSize;
+			set->maxBlockSize = maxBlockSize;//更新AllocSetContext的相关信息
 
 			/* Reinitialize its header, installing correct name and parent */
 			MemoryContextCreate((MemoryContext) set,
 								T_AllocSetContext,
 								&AllocSetMethods,
 								parent,
-								name);
+								name);//创建MemoryContext
 
-			return (MemoryContext) set;
+
+            return (MemoryContext) set;//返回
 		}
 	}
 
+    //freeListIndex = -1，定制化自己的MemoryContext
 	/* Determine size of initial block */
 	firstBlockSize = MAXALIGN(sizeof(AllocSetContext)) +
-		ALLOC_BLOCKHDRSZ + ALLOC_CHUNKHDRSZ;
+		ALLOC_BLOCKHDRSZ + ALLOC_CHUNKHDRSZ;//申请内存：AllocSetContext大小+Block头部大小+Chunk头部大小
 	if (minContextSize != 0)
 		firstBlockSize = Max(firstBlockSize, minContextSize);
 	else
@@ -474,8 +479,8 @@ AllocSetContextCreateExtended(MemoryContext parent,
 	 * Allocate the initial block.  Unlike other aset.c blocks, it starts with
 	 * the context header and its block header follows that.
 	 */
-	set = (AllocSet) malloc(firstBlockSize);
-	if (set == NULL)
+	set = (AllocSet) malloc(firstBlockSize);//分配内存
+	if (set == NULL)//OOM？
 	{
 		if (TopMemoryContext)
 			MemoryContextStats(TopMemoryContext);
@@ -492,6 +497,7 @@ AllocSetContextCreateExtended(MemoryContext parent,
 	 */
 
 	/* Fill in the initial block's block header */
+    //获取Block头部指针，开始填充Block头部信息
 	block = (AllocBlock) (((char *) set) + MAXALIGN(sizeof(AllocSetContext)));
 	block->aset = set;
 	block->freeptr = ((char *) block) + ALLOC_BLOCKHDRSZ;
@@ -508,9 +514,9 @@ AllocSetContextCreateExtended(MemoryContext parent,
 	set->keeper = block;
 
 	/* Finish filling in aset-specific parts of the context header */
-	MemSetAligned(set->freelist, 0, sizeof(set->freelist));
+	MemSetAligned(set->freelist, 0, sizeof(set->freelist));//对齐
 
-	set->initBlockSize = initBlockSize;
+	set->initBlockSize = initBlockSize;//初始化set的各项属性
 	set->maxBlockSize = maxBlockSize;
 	set->nextBlockSize = initBlockSize;
 	set->freeListIndex = freeListIndex;
@@ -537,14 +543,14 @@ AllocSetContextCreateExtended(MemoryContext parent,
 	set->allocChunkLimit = ALLOC_CHUNK_LIMIT;
 	while ((Size) (set->allocChunkLimit + ALLOC_CHUNKHDRSZ) >
 		   (Size) ((maxBlockSize - ALLOC_BLOCKHDRSZ) / ALLOC_CHUNK_FRACTION))
-		set->allocChunkLimit >>= 1;
+		set->allocChunkLimit >>= 1;//计算ChunkLimit上限，每次/2
 
 	/* Finally, do the type-independent part of context creation */
 	MemoryContextCreate((MemoryContext) set,
 						T_AllocSetContext,
 						&AllocSetMethods,
 						parent,
-						name);
+						name);//创建MemoryContext
 
 	return (MemoryContext) set;
 }

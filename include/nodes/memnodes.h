@@ -53,7 +53,7 @@ typedef struct MemoryContextCounters
 
 typedef void (*MemoryStatsPrintFunc) (MemoryContext context, void *passthru,
 									  const char *stats_string);
-
+//内存管理方法
 typedef struct MemoryContextMethods
 {
 	void	   *(*alloc) (MemoryContext context, Size size);
@@ -72,7 +72,10 @@ typedef struct MemoryContextMethods
 #endif
 } MemoryContextMethods;
 
-
+/*
+ * 内存上下文
+ * AllocSetContext结构体的MemoryContextData与其共享
+ */
 typedef struct MemoryContextData
 {
 	NodeTag		type;			/* identifies exact kind of context */

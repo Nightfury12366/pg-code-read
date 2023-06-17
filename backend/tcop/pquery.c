@@ -60,6 +60,7 @@ static uint64 DoPortalRunFetch(Portal portal,
 static void DoPortalRewind(Portal portal);
 
 
+//根据输入的参数构造QueryDesc
 /*
  * CreateQueryDesc
  */
@@ -97,7 +98,7 @@ CreateQueryDesc(PlannedStmt *plannedstmt,
 
 	return qd;
 }
-
+//释放资源
 /*
  * FreeQueryDesc
  */
@@ -133,6 +134,17 @@ FreeQueryDesc(QueryDesc *qdesc)
  * Must be called in a memory context that will be reset or deleted on
  * error; otherwise the executor's memory usage will be leaked.
  */
+/*
+输入：
+    plan-已生成执行计划的语句
+    sourceText-源SQL语句
+    params-TODO
+    queryEnv-查询执行的环境
+    dest-目标接收器
+    completionTag-完成标记
+输出：
+    无
+*/
 static void
 ProcessQuery(PlannedStmt *plan,
 			 const char *sourceText,
@@ -141,29 +153,29 @@ ProcessQuery(PlannedStmt *plan,
 			 DestReceiver *dest,
 			 char *completionTag)
 {
-	QueryDesc  *queryDesc;
+	QueryDesc  *queryDesc;//查询描述符
 
 	/*
 	 * Create the QueryDesc object
 	 */
 	queryDesc = CreateQueryDesc(plan, sourceText,
 								GetActiveSnapshot(), InvalidSnapshot,
-								dest, params, queryEnv, 0);
+								dest, params, queryEnv, 0);//构造查询描述符
 
 	/*
 	 * Call ExecutorStart to prepare the plan for execution
 	 */
-	ExecutorStart(queryDesc, 0);
+	ExecutorStart(queryDesc, 0);//启动执行器
 
 	/*
 	 * Run the plan to completion.
 	 */
-	ExecutorRun(queryDesc, ForwardScanDirection, 0L, true);
+	ExecutorRun(queryDesc, ForwardScanDirection, 0L, true);//执行
 
 	/*
 	 * Build command completion status string, if caller wants one.
 	 */
-	if (completionTag)
+	if (completionTag)//如果需要完成标记
 	{
 		Oid			lastOid;
 
@@ -174,7 +186,7 @@ ProcessQuery(PlannedStmt *plan,
 						 "SELECT " UINT64_FORMAT,
 						 queryDesc->estate->es_processed);
 				break;
-			case CMD_INSERT:
+			case CMD_INSERT://插入语句
 				if (queryDesc->estate->es_processed == 1)
 					lastOid = queryDesc->estate->es_lastoid;
 				else
@@ -202,10 +214,10 @@ ProcessQuery(PlannedStmt *plan,
 	/*
 	 * Now, we close down all the scans and free allocated resources.
 	 */
-	ExecutorFinish(queryDesc);
-	ExecutorEnd(queryDesc);
+	ExecutorFinish(queryDesc);//完成
+	ExecutorEnd(queryDesc);//结束
 
-	FreeQueryDesc(queryDesc);
+	FreeQueryDesc(queryDesc);//释放资源
 }
 
 /*
