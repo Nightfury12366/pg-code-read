@@ -214,14 +214,38 @@ PageAddItemExtended函数：
   OffsetNumber-数据存储实际的偏移量
 */
 
+/*
+ *  PageAddItemExtended
+ *
+ *  插入元组Item到数据页Page中。返回值是插入到Page中的偏移量OffsetNumber
+ *     或无效的InvalidOffsetNumber。
+ *
+ *
+ *  如果设置了offsetNumber（非零）且设置了标志位PAI_OVERWRITE, 我们只要将元组item插到指定的偏移量
+ *  offsetNumber之上，此元组要么是当前未被使用的元组，要么是已被回收的元组。
+ *
+ *  如果指定了offsetNumber（非零）且标志位PAI_OVERWRITE未设置, 在
+ *  指定的offsetNumber插入元组, 后续再移除已存在的元组以腾出空间。
+ *
+ *  如果未指定offsetNumber（等于零）, 则寻找第一个未被使用且备回收的偏移量作为插入点。
+ *
+ *  如果指定了 PAI_IS_HEAP , 我们保证不会有超过MaxHeapTuplesPerPage个行指针存在于数据页Page之上。
+ *
+ */
+
+
 OffsetNumber
-PageAddItemExtended(Page page,
-					Item item,
+PageAddItemExtended(Page page,/*页头指针*/
+					Item item,  /*元组头指针，在上层调用函数RelationPutHeapTuple
+                                * 中通过 (Item) tuple->t_data传入，其中tuple是HeapTuple结构类型，
+                                * Item是Pointer类型*/
 					Size size,
-					OffsetNumber offsetNumber,
+					OffsetNumber offsetNumber,  /*两位二进制数，高位表示是否overwrite，
+                                                低位表示是否is_heap， 上层函数传入的是1*/
 					int flags)
 {
-	PageHeader	phdr = (PageHeader) page;  // 页头指针
+	PageHeader	phdr = (PageHeader) page;  /*将page指针强制转为PageHeader类型，
+                                            *指向PageHeaderData结构*/
 	Size		alignedSize;  // 对齐大小
 	int			lower;  // Free space低位
 	int			upper;  // Free space高位
@@ -232,6 +256,9 @@ PageAddItemExtended(Page page,
 	/*
 	 * Be wary about corrupted page pointers
 	 */
+    /*
+    * 校验数据页中的pd_lower、pd_upper和pd_special指针
+    */
 	if (phdr->pd_lower < SizeOfPageHeaderData ||
 		phdr->pd_lower > phdr->pd_upper ||
 		phdr->pd_upper > phdr->pd_special ||
@@ -254,10 +281,13 @@ PageAddItemExtended(Page page,
 	limit = OffsetNumberNext(PageGetMaxOffsetNumber(page));  // 行指针当前最后一个再+1
 
 	/* was offsetNumber passed in? */
-	if (OffsetNumberIsValid(offsetNumber))//如果指定了数据存储的偏移量（传入的偏移量参数有效）
+	if (OffsetNumberIsValid(offsetNumber))//如果指定了数据存储的偏移量（指定了offsetNumber）
 	{
 		/* yes, check it */
-		if ((flags & PAI_OVERWRITE) != 0) //不覆盖原有数据
+        /* 如果覆盖，检查指定offsetNumber所代表的行数据指针ItemId是否被使用或是否有存储，
+         * 如果是，则报错并返回无效的offsetNumber
+         * 因为如果覆盖，原先的元组必须是是当前未被使用的元组或已被回收的元组。*/
+		if ((flags & PAI_OVERWRITE) != 0)
 		{
 			if (offsetNumber < limit)
 			{
@@ -271,17 +301,23 @@ PageAddItemExtended(Page page,
 				}
 			}
 		}
-		else //覆盖原有数据
+        /*如果指定了offsetNumber，且不覆盖原元组，这里做个标记，先不移除原元组，由VACUUM机制移除，在limit处插入新元组*/
+		else
 		{
             //指定的行偏移不在空闲空间中，需要移动原数据为新数据腾位置
 			if (offsetNumber < limit)
 				needshuffle = true; /* need to move existing linp's */
 		}
 	}
+    /* 如果没有指定offsetNumber, 注：在上层调用函数RelationPutHeapTuple
+    * 中，没有指定offsetNumber, 参见\src\backend\access\heap\hio.c*/
 	else//没有指定数据存储行偏移
 	{
 		/* offsetNumber was not passed in, so find a free slot */
 		/* if no free slot, we'll put it at limit (1st open slot) */
+        /*
+        * 如果PageHeader的pd_flags标志位提示有空闲的行指针
+        */
 		if (PageHasFreeLinePointers(phdr))//页头标记提示存在已回收的空间
 		{
 			/*
@@ -293,6 +329,7 @@ PageAddItemExtended(Page page,
 			for (offsetNumber = 1; offsetNumber < limit; offsetNumber++)
 			{
 				itemId = PageGetItemId(phdr, offsetNumber);
+                /*寻找未被使用或行指针ItemId指向的元组无存储（lp_len ==0）*/
 				if (!ItemIdIsUsed(itemId) && !ItemIdHasStorage(itemId))
 					break;
 			}
@@ -303,13 +340,14 @@ PageAddItemExtended(Page page,
 				PageClearHasFreeLinePointers(phdr);
 			}
 		}
-		else//没有已回收的空间，行指针/数据存储到Free Space中，也就是插入到数组的后面
+		else//没有已回收的空间，行指针/数据存储到Free Space中，也就是插入到数组的后面，要插入的下标直接取limit的值
 		{
 			/* don't bother searching if hint says there's no free slot */
 			offsetNumber = limit;
 		}
 	}
 
+    /* 校验offsetNumber不能比limit大 */
 	/* Reject placing items beyond the first unused line pointer */
 	if (offsetNumber > limit)
 	{
@@ -319,9 +357,10 @@ PageAddItemExtended(Page page,
 	}
 
 	/* Reject placing items beyond heap boundary, if heap */
+    /* 如果指定了is_heap，offsetNumber不能大于MaxHeapTuplesPerPage */
 	if ((flags & PAI_IS_HEAP) != 0 && offsetNumber > MaxHeapTuplesPerPage)
 	{
-        //是Heap数据（个人理解是新插入的堆tuple），但偏移大于一页可存储的最大Tuple数，报错
+        //页存储的是Heap堆表数据，但偏移大于一页可存储的最大Tuple数，报错
 		elog(WARNING, "can't put more than MaxHeapTuplesPerPage items in a heap page");
 		return InvalidOffsetNumber;
 	}
@@ -334,11 +373,13 @@ PageAddItemExtended(Page page,
 	 */
 	if (offsetNumber == limit || needshuffle)
         //如果数据存储在Free space中，修改lower值
+        /*如果需要移除老元组或者插入位置在limit, lower值增大sizeof(ItemIdData)即4个字节*/
 		lower = phdr->pd_lower + sizeof(ItemIdData);
 	else
         //否则，找到了已回收的空闲位置，使用原有的lower
 		lower = phdr->pd_lower;
 
+    /*对元组的大小size做对齐操作，例如61对齐到64，大概是按8对齐*/
 	alignedSize = MAXALIGN(size);//大小对齐
 
 	upper = (int) phdr->pd_upper - (int) alignedSize;//申请存储空间
@@ -358,7 +399,7 @@ PageAddItemExtended(Page page,
 				(limit - offsetNumber) * sizeof(ItemIdData));
 
 	/* set the item pointer */
-    //设置新数据行指针，itemId作为指针传入进去，改的其实是itemId，upper和size传入进去为itemId初始化
+    //更新行指针，itemId作为指针传入进去，改的其实是itemId，upper和size传入进去为itemId初始化
 	ItemIdSetNormal(itemId, upper, size);
 
 	/*
@@ -377,6 +418,7 @@ PageAddItemExtended(Page page,
 
 	/* copy the item's data onto the page */
     //把数据放在数据区
+    /* 将item指针所指位置开始size字节大小的数据拷贝到page+upper位置来 */
 	memcpy((char *) page + upper, item, size);
 
 	/* adjust page header */

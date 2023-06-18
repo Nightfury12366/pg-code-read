@@ -358,6 +358,15 @@ PageValidateSpecialPointer(Page page)
  *		return zero to ensure sane behavior.  Accept double evaluation
  *		of the argument so that we can ensure this.
  */
+/*
+ * PageGetMaxOffsetNumber
+ *      返回文件块page内元组的最大偏移量offsetNumber。
+ *
+ *      NOTE: 如果文件块未初始化(pd_lower == 0), 我们必须
+ *      返回zero.
+ *
+ *      pd_lower指向linp[]数组的最后一个下标
+ */
 #define PageGetMaxOffsetNumber(page) \
 	(((PageHeader) (page))->pd_lower <= SizeOfPageHeaderData ? 0 : \
 	 ((((PageHeader) (page))->pd_lower - SizeOfPageHeaderData) \

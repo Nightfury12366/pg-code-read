@@ -124,6 +124,15 @@ extern PGDLLIMPORT int32 *LocalRefCount;
  * Note:
  *		Assumes buffer is valid.
  */
+/*
+ * BufferGetBlock函数声明
+ *      返回和buffer相关联的指向文件块的指针，返回值的类型是void *,
+ *              需用(Page)强制转型。
+ *
+ * Note:
+ *      假设Buffer是有效的.
+ */
+
 #define BufferGetBlock(buffer) \
 ( \
 	AssertMacro(BufferIsValid(buffer)), \

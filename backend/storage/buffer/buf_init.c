@@ -19,7 +19,10 @@
 
 
 BufferDescPadded *BufferDescriptors;
-char	   *BufferBlocks;
+char	   *BufferBlocks; //在InitBufferPool()中会被初始化
+
+
+
 LWLockMinimallyPadded *BufferIOLWLockArray = NULL;
 WritebackContext BackendWritebackContext;
 CkptSortItem *CkptBufferIds;

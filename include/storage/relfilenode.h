@@ -54,6 +54,7 @@
  * there *must not* be any unused padding bytes in this struct.  That
  * should be safe as long as all the fields are of type Oid.
  */
+// 关系文件的物理id数据结构
 typedef struct RelFileNode
 {
 	Oid			spcNode;		/* tablespace */

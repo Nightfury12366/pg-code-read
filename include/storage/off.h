@@ -20,6 +20,7 @@
  *
  * this is a 1-based index into the linp (ItemIdData) array in the
  * header of each disk page.
+ * 磁盘上文件块Page中行指针数组linp[] 的索引
  */
 typedef uint16 OffsetNumber;
 
@@ -50,6 +51,7 @@ typedef uint16 OffsetNumber;
  *		OffsetNumber to move back, and sometimes we do so to form a
  *		real C array index).
  */
+/*返回指定偏移量offsetNumber的元组的下一个/前一个元组的偏移量 */
 #define OffsetNumberNext(offsetNumber) \
 	((OffsetNumber) (1 + (offsetNumber)))
 #define OffsetNumberPrev(offsetNumber) \

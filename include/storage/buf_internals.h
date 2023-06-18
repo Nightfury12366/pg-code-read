@@ -90,7 +90,7 @@
  */
 typedef struct buftag
 {
-	RelFileNode rnode;			/* physical relation identifier */
+	RelFileNode rnode;			/* physical relation identifier *//* 关系文件的物理id */
 	ForkNumber	forkNum;
 	BlockNumber blockNum;		/* blknum relative to begin of reln */
 } BufferTag;

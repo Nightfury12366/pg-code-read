@@ -144,6 +144,7 @@ typedef uint16 ItemLength;
  *		Set the item identifier to be NORMAL, with the specified storage.
  *		Beware of multiple evaluations of itemId!
  */
+//更新行指针
 #define ItemIdSetNormal(itemId, off, len) \
 ( \
 	(itemId)->lp_flags = LP_NORMAL, \

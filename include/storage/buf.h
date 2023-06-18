@@ -22,6 +22,8 @@
  */
 /*
  * 实际类型为整型，共享缓冲区的index，0为非法Buffer。
+ * Buffer为零表示无效的Buffer, 为正表示是共享缓冲池中的Buffer索引(1..NBuffers),
+ * 为负表示本地缓冲池中的Buffer的索引(-1 .. -NLocBuffer).
  */
 typedef int Buffer;
 
@@ -35,7 +37,7 @@ typedef int Buffer;
 
 /*
  * BufferIsLocal
- *		True iff the buffer is local (not visible to other backends).
+ *		True iff the buffer is local (not visible to other backends). // 独享内存
  */
 #define BufferIsLocal(buffer)	((buffer) < 0)
 

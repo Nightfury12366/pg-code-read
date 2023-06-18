@@ -27,6 +27,7 @@
 
 /*
  * RelationPutHeapTuple - place tuple at specified page
+ * RelationPutHeapTuple - 在指定的页面插入元组tuple
  *
  * !!! EREPORT(ERROR) IS DISALLOWED HERE !!!  Must PANIC on failure!!!
  *
@@ -38,8 +39,8 @@ RelationPutHeapTuple(Relation relation,  // 整张表的关系数据结构
 					 HeapTuple tuple,    // 堆元组数据结构，参见htup.h
 					 bool token)         // ?
 {
-	Page		pageHeader;
-	OffsetNumber offnum;
+	Page		pageHeader;//页头指针
+	OffsetNumber offnum;//偏移量
 
 	/*
 	 * A tuple that's being inserted speculatively should already have its
@@ -53,6 +54,7 @@ RelationPutHeapTuple(Relation relation,  // 整张表的关系数据结构
 
 	/* Add the tuple to the page */
     //根据buffer获取相应的page（页头），返回的其实是char指针
+    /* 获取buffer关联的页头指针 */
 	pageHeader = BufferGetPage(buffer);
     //插入数据,PageAddItem函数上一节已介绍，函数成功返回行偏移
     // tuple->t_data 其实就是HeapTupleHeaderData结构体  /* -> tuple header and data */
