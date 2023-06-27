@@ -600,10 +600,12 @@ ReadBuffer(Relation reln, BlockNumber blockNum)
  *		allocate a new block.  (Caller is responsible for
  *		ensuring that only one backend tries to extend a
  *		relation at the same time!)
+ *		【返回请求的PAGE，如果blknum==P_NEW，扩展表文件申请一个新的页面读到内存里】
  *
  * Returns: the buffer number for the buffer containing
  *		the block read.  The returned buffer has been pinned.
  *		Does not return on error --- elog's instead.
+ *		【返回请求的、可用的页面，注意该页面已经PIN了】
  *
  * Assume when this function is called, that reln has been opened already.
  *
@@ -611,10 +613,12 @@ ReadBuffer(Relation reln, BlockNumber blockNum)
  * validated.  An error is thrown if the page header is not valid.  (But
  * note that an all-zero page is considered "valid"; see
  * PageIsVerifiedExtended().)
+ * 【RBM_NORMAL模式，页面从磁盘上读取出来并验证page header】
  *
  * RBM_ZERO_ON_ERROR is like the normal mode, but if the page header is not
  * valid, the page is zeroed instead of throwing an error. This is intended
  * for non-critical data, where the caller is prepared to repair errors.
+ * 【RBM_ZERO_ON_ERROR模式，如果page header验证失败，直接清零不报错，适用于非核心数据场景】
  *
  * In RBM_ZERO_AND_LOCK mode, if the page isn't in buffer cache already, it's
  * filled with zeros instead of reading it from disk.  Useful when the caller
@@ -625,6 +629,8 @@ ReadBuffer(Relation reln, BlockNumber blockNum)
  * Caution: do not use this mode to read a page that is beyond the relation's
  * current physical EOF; that is likely to cause problems in md.c when
  * the page is modified and written out. P_NEW is OK, though.
+ * 【RBM_ZERO_AND_LOCK高性能模式：页面不在缓冲区中，不从磁盘读，直接填0，可用于调用者想要随机填充
+ * 页面的场景。页面锁定避免别人读到初始化之前的一堆0】
  *
  * RBM_ZERO_AND_CLEANUP_LOCK is the same as RBM_ZERO_AND_LOCK, but acquires
  * a cleanup-strength lock on the page.
@@ -633,6 +639,38 @@ ReadBuffer(Relation reln, BlockNumber blockNum)
  *
  * If strategy is not NULL, a nondefault buffer access strategy is used.
  * See buffer/README for details.
+ */
+/*
+ * 当后端进程想要访问所需页面时，它会调用ReadBufferExtended函数。包含3种情况
+ *
+ * 1. 访问存储在缓冲池中的页面：内幕探索书的174-175页。
+ *      (1) 创建所需页面的buffer_tag（假设为'Tag_C'），并使用散列函数计算与描述符相对应的散列桶槽。
+ *      (2) 获取对应散列桶槽分区上的BufMappingLock共享锁
+ *      (3) 查找标签为'Tag_C'的条目，并从条目中获取buffer_id。假设bufferf_id为2
+ *      (4) 将buffer_id=2的缓冲区描述符钉住，即将描述符的refcount和usage_count增加1
+ *      (5) 释放BufMappingLock
+ *      (6) 访问buffer_id=2的缓冲池槽
+ *
+ * 2. 将页面从存储加载到空槽，假设所需页面不在缓冲池中，且freelist中有空闲元素（空描述符）。
+ *     这时，缓冲区管理器将执行以下步骤：内幕探索书的175-176页。
+ *      (1) 创建所需页面的buffer_tag（假设为'Tag_E'），并使用散列函数计算与描述符相对应的散列桶槽。
+ *      (2) 获取对应散列桶槽分区上的BufMappingLock共享锁
+ *      (3) 查找缓冲区（根据假设，这里没找到）
+ *      (4) 释放BufMappingLock
+ *      (5) 从freelist中获取空缓冲区描述符，并将其钉住。在本例中获取的描述符：buffer_id=4
+ *      (6) 获取对应散列桶槽分区上的BufMappingLock独占锁
+ *      (7) 创建一条新的缓冲表数据项：buffer_tag='Tag_E', buffer_id=4，并将其插入缓冲表中
+ *      (8) 将页面数据从存储加载至buffer_id=4的缓冲池槽中，如下所示：
+ *          1. 获取对应描述符的io_in_progress_lock独占锁
+ *          2. 将相应描述符的IO_IN_PROGRESS标记位置为1，以防其他进程访问
+ *          3. 将所需的页面数据从存储加载到缓冲池插槽中
+ *          4. 更改相应描述符的状态，将IO_IN_PROGRESS标记位设置为"0"，且VALID标记位设置为"1"
+ *          5. 释放io_in_progress_lock
+ *      (9) 释放相应分区的BufMappingLock
+ *      (10) 访问buffer_id=4的缓冲池槽
+ *
+ * 3. 将页面从存储加载到受害者缓冲池槽
+ *    参见内幕探索书的177-178页。
  */
 Buffer
 ReadBufferExtended(Relation reln, ForkNumber forkNum, BlockNumber blockNum,
@@ -657,6 +695,7 @@ ReadBufferExtended(Relation reln, ForkNumber forkNum, BlockNumber blockNum,
 	 */
 	pgstat_count_buffer_read(reln);//统计信息
     //TODO Buffer管理后续再行解读
+    // 主要逻辑在里头
 	buf = ReadBuffer_common(RelationGetSmgr(reln), reln->rd_rel->relpersistence,
 							forkNum, blockNum, mode, strategy, &hit);
 	if (hit)
@@ -741,12 +780,13 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		else
 			pgBufferUsage.local_blks_read++;
 	}
-	else
+	else // 是shared buffer
 	{
 		/*
 		 * lookup the buffer.  IO_IN_PROGRESS is set if the requested block is
 		 * not currently in memory.
 		 */
+        // 主要进去看BufferAlloc函数
 		bufHdr = BufferAlloc(smgr, relpersistence, forkNum, blockNum,
 							 strategy, &found);
 		if (found)
@@ -975,6 +1015,8 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
  *		buffer.  If no buffer exists already, selects a replacement
  *		victim and evicts the old page, but does NOT read in new page.
  *
+ *		【找到一个buffer，如果没有淘汰一个】
+ *
  * "strategy" can be a buffer replacement strategy object, or NULL for
  * the default strategy.  The selected buffer's usage_count is advanced when
  * using the default strategy, but otherwise possibly not (see PinBuffer).
@@ -983,6 +1025,10 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
  * desired page.  If it already did have the desired page, *foundPtr is
  * set true.  Otherwise, *foundPtr is set false and the buffer is marked
  * as IO_IN_PROGRESS; ReadBuffer will now need to do I/O to fill it.
+ *
+ * 【返回的buffer会pin住，并且页面数据已经填充好可用】
+ * 【如果页面在缓冲区里面已经有了，直接返回】
+ * 【如果没有则把foundPtr=false，buffer标记成IO_IN_PROGRESS，上层函数“需”再做IO】
  *
  * *foundPtr is actually redundant with the buffer's BM_VALID flag, but
  * we keep it for simplicity in ReadBuffer.
@@ -1008,31 +1054,42 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	uint32		buf_state;
 
 	/* create a tag so we can lookup the buffer */
+    // 生成BufferTag结构体
 	INIT_BUFFERTAG(newTag, smgr->smgr_rnode.node, forkNum, blockNum);
 
 	/* determine its hash code and partition lock ID */
-	newHash = BufTableHashCode(&newTag);
-	newPartitionLock = BufMappingPartitionLock(newHash);
-
+	newHash = BufTableHashCode(&newTag);  // 生成哈希槽分区
+	newPartitionLock = BufMappingPartitionLock(newHash); // 获取对应哈希分区的BufMappingLock对象
+    /*
+     * 用hash值 % NUM_BUFFER_PARTITIONS(128)，然后去MainLWLockArray数组里面拿锁：
+     *     #define BufTableHashPartition(hashcode)
+     *          ((hashcode) % NUM_BUFFER_PARTITIONS)
+     *
+     *   #define BufMappingPartitionLock(hashcode)
+     *      (&MainLWLockArray[BUFFER_MAPPING_LWLOCK_OFFSET
+     *      + BufTableHashPartition(hashcode)].lock)
+     */
 	/* see if the block is in the buffer pool already */
-	LWLockAcquire(newPartitionLock, LW_SHARED);
-	buf_id = BufTableLookup(&newTag, newHash);
-	if (buf_id >= 0)
+	LWLockAcquire(newPartitionLock, LW_SHARED);// 获取对应分区上的BufMappingLock共享锁
+	buf_id = BufTableLookup(&newTag, newHash);// 找是否有了从buffer_tag-->buffer_id的映射
+	if (buf_id >= 0)//【hash表中tag --> buf_id，找到了说明已经在buffer中了】
 	{
 		/*
 		 * Found it.  Now, pin the buffer so no one can steal it from the
 		 * buffer pool, and check to see if the correct data has been loaded
 		 * into the buffer.
 		 */
+        //【找到了！直接pinbuffer】
 		buf = GetBufferDescriptor(buf_id);
-
+        // 【下面有这个函数的展开分析，共享内存中desc和本地缓存ref_count都做++】
 		valid = PinBuffer(buf, strategy);
 
 		/* Can release the mapping lock as soon as we've pinned it */
+        // 【PIN住就可以放锁了】
 		LWLockRelease(newPartitionLock);
 
 		*foundPtr = true;
-
+        // 【哈希表中找到了，但是锁完了发现页面是不可用的，需要把页面重新读上来】
 		if (!valid)
 		{
 			/*
@@ -1059,6 +1116,8 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	 * Didn't find it in the buffer pool.  We'll have to initialize a new
 	 * buffer.  Remember to unlock the mapping lock while doing the work.
 	 */
+    // 【走到这了说明在hash表中没找到，没在缓存中】
+    // 【需要初始化一个新的buffer，先把锁放了在初始化】
 	LWLockRelease(newPartitionLock);
 
 	/* Loop here in case we have to try another victim buffer */
@@ -1068,12 +1127,20 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		 * Ensure, while the spinlock's not yet held, that there's a free
 		 * refcount entry.
 		 */
+        /*
+         * 【从私有一级缓存数组中拿出来一个（buffer_id，ref_count）位置】
+         * 【如果没位置了，换出一个到二级缓存哈希表中，然后拿出来一个位置】
+         */
 		ReservePrivateRefCountEntry();
 
 		/*
 		 * Select a victim buffer.  The buffer is returned with its header
 		 * spinlock still held!
 		 */
+        /*
+         * 【找一个buffer位置，返回ID和buf_state，先找freelist没有就clocksweep淘汰】
+         * 【这个函数下面有展开】
+         */
 		buf = StrategyGetBuffer(strategy, &buf_state);
 
 		Assert(BUF_STATE_GET_REFCOUNT(buf_state) == 0);
@@ -1082,6 +1149,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		oldFlags = buf_state & BUF_FLAG_MASK;
 
 		/* Pin the buffer and then release the buffer spinlock */
+        // 【共享缓冲区和本地缓冲区都的ref都++】
 		PinBuffer_Locked(buf);
 
 		/*
@@ -1091,6 +1159,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		 * won't prevent hint-bit updates).  We will recheck the dirty bit
 		 * after re-locking the buffer header.
 		 */
+        // 【需要刷脏】
 		if (oldFlags & BM_DIRTY)
 		{
 			/*
@@ -1169,6 +1238,8 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		 * To change the association of a valid buffer, we'll need to have
 		 * exclusive lock on both the old and new mapping partitions.
 		 */
+        // 【拿出来的块不需要刷脏了 或者上面已经刷完了】
+        // 【然后这个块的TAG如果BM_TAG_VALID，重新加到hash表里面】
 		if (oldFlags & BM_TAG_VALID)
 		{
 			/*
@@ -1200,7 +1271,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 				LWLockAcquire(newPartitionLock, LW_EXCLUSIVE);
 			}
 		}
-		else
+		else //【否则这个旧TAG是无效的，不需要管以前的了，锁新的分区就好】
 		{
 			/* if it wasn't valid, we need only the new partition */
 			LWLockAcquire(newPartitionLock, LW_EXCLUSIVE);
@@ -1217,6 +1288,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		 * Note that we have not yet removed the hashtable entry for the old
 		 * tag.
 		 */
+        // 【新TAG插入哈希表】
 		buf_id = BufTableInsert(&newTag, newHash, buf->buf_id);
 
 		if (buf_id >= 0)
@@ -1314,7 +1386,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		buf_state |= BM_TAG_VALID | BUF_USAGECOUNT_ONE;
 
 	UnlockBufHdr(buf, buf_state);
-
+    //【如果老TAG有有效的，需要从哈希表里面删掉】
 	if (oldPartitionLock != NULL)
 	{
 		BufTableDelete(&oldTag, oldHash);
@@ -1576,6 +1648,13 @@ ReleaseAndReadBuffer(Buffer buffer,
  * Returns true if buffer is BM_VALID, else false.  This provision allows
  * some callers to avoid an extra spinlock cycle.
  */
+
+/*
+ * 用buf_id在本地缓存中查是不是已经pin了
+ * 如果已经pin了本地ref_count++
+ * 如果本地没pin，在desc共享内存中更新state（ref_count++，usage_count++最大到5），本地ref_count++
+ * 注意：锁完了页面数据不一定是可用的，返回值是：(buf_state & BM_VALID) != 0
+ */
 static bool
 PinBuffer(BufferDesc *buf, BufferAccessStrategy strategy)
 {
@@ -1583,19 +1662,23 @@ PinBuffer(BufferDesc *buf, BufferAccessStrategy strategy)
 	bool		result;
 	PrivateRefCountEntry *ref;
 
+    // 再local buffer中找b
 	ref = GetPrivateRefCountEntry(b, true);
 
 	if (ref == NULL)
 	{
 		uint32		buf_state;
 		uint32		old_buf_state;
-
+        //【没找到在数组中申请一个，如果数组满8个了踢一个到哈希表中】
 		ReservePrivateRefCountEntry();
+        // 【数组中把b填进去】
 		ref = NewPrivateRefCountEntry(b);
 
+        // 【更新buf->state】
 		old_buf_state = pg_atomic_read_u32(&buf->state);
 		for (;;)
 		{
+            // 【如果锁了，轮询然后把新状态拿出来】
 			if (old_buf_state & BM_LOCKED)
 				old_buf_state = WaitBufHdrUnlocked(buf);
 
@@ -1604,9 +1687,11 @@ PinBuffer(BufferDesc *buf, BufferAccessStrategy strategy)
 			/* increase refcount */
 			buf_state += BUF_REFCOUNT_ONE;
 
+            //  【这里strategy == NULL指的clock sweep正常淘汰，否则用ring buffer批量读写数据用的】
 			if (strategy == NULL)
 			{
 				/* Default case: increase usagecount unless already max. */
+                // usage_count最多5个
 				if (BUF_STATE_GET_USAGECOUNT(buf_state) < BM_MAX_USAGE_COUNT)
 					buf_state += BUF_USAGECOUNT_ONE;
 			}
@@ -1628,6 +1713,7 @@ PinBuffer(BufferDesc *buf, BufferAccessStrategy strategy)
 			}
 		}
 	}
+    // 【如果已经pin了，本地的refcount++即可，对于共享内存中的desc来说，一个进程pin多少次都算一次】
 	else
 	{
 		/* If we previously pinned the buffer, it must surely be valid */

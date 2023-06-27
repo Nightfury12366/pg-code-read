@@ -58,11 +58,11 @@
 #define BM_LOCKED				(1U << 22)	/* buffer header is locked */
 #define BM_DIRTY				(1U << 23)	/* data needs writing */
 #define BM_VALID				(1U << 24)	/* data is valid */
-#define BM_TAG_VALID			(1U << 25)	/* tag is assigned */
+#define BM_TAG_VALID			(1U << 25)	/* tag is assigned */ /*已经分配标签*/
 #define BM_IO_IN_PROGRESS		(1U << 26)	/* read or write in progress */
 #define BM_IO_ERROR				(1U << 27)	/* previous I/O failed */
 #define BM_JUST_DIRTIED			(1U << 28)	/* dirtied since write started */
-#define BM_PIN_COUNT_WAITER		(1U << 29)	/* have waiter for sole pin */
+#define BM_PIN_COUNT_WAITER		(1U << 29)	/* have waiter for sole pin */ /*有人等着钉住页面*/
 #define BM_CHECKPOINT_NEEDED	(1U << 30)	/* must write for checkpoint */
 #define BM_PERMANENT			(1U << 31)	/* permanent buffer (not unlogged,
 											 * or init fork) */
@@ -90,9 +90,9 @@
  */
 typedef struct buftag
 {
-	RelFileNode rnode;			/* physical relation identifier *//* 关系文件的物理id */
-	ForkNumber	forkNum;
-	BlockNumber blockNum;		/* blknum relative to begin of reln */
+	RelFileNode rnode;			/* physical relation identifier *//* 关系文件的物理id, 表空间、数据库和表的oid*/
+	ForkNumber	forkNum;        /*关系表的分支号：0:main 1:fsm分支 2:vm分支*/
+	BlockNumber blockNum;		/* blknum relative to begin of reln 相对于关系开始位置的块号*/
 } BufferTag;
 
 #define CLEAR_BUFFERTAG(a) \
@@ -164,29 +164,36 @@ typedef struct buftag
  * to go away.  This is signaled by storing its own PID into
  * wait_backend_pid and setting flag bit BM_PIN_COUNT_WAITER.  At present,
  * there can be only one such waiter per buffer.
+ * 就目前而言，每个缓冲区只能有一个等待者
  *
  * We use this same struct for local buffer headers, but the locks are not
  * used and not all of the flag bits are useful either. To avoid unnecessary
  * overhead, manipulations of the state field should be done without actual
  * atomic operations (i.e. only pg_atomic_read_u32() and
  * pg_atomic_unlocked_write_u32()).
+ * 对于本地缓冲区，我们也使用同样的首部，不过锁字段就没用了，一些标记位也没用。为了避免不必要
+ * 的开销，对state字段的操作不需要用实际的原子操作
  *
  * Be careful to avoid increasing the size of the struct when adding or
  * reordering members.  Keeping it below 64 bytes (the most common CPU
  * cache line size) is fairly important for performance.
+ * 增加该结构的尺寸，增减，重排该结构的成员时需要特别小心。保证该结构体小于64B对于性能
+ * 至关重要（最常见的CPU缓存尺寸）
  */
 typedef struct BufferDesc
 {
-	BufferTag	tag;			/* ID of page contained in buffer */
-	int			buf_id;			/* buffer's index number (from 0) */
+	BufferTag	tag;			/* ID of page contained in buffer 存储在缓冲区中的页面标识*/
+	int			buf_id;			/* buffer's index number (from 0) 缓冲区的索引编号（从0开始）*/
 
 	/* state of the tag, containing flags, refcount and usagecount */
+    /* 标记的状态，包含标记位、引用计数、使用计数 */
+    /* 9.6版本使用原子操作替换了很多字段的功能 */
 	pg_atomic_uint32 state;
 
-	int			wait_backend_pid;	/* backend PID of pin-count waiter */
-	int			freeNext;		/* link in freelist chain */
+	int			wait_backend_pid;	/* backend PID of pin-count waiter 等待钉页计数的后端进程PID，目前只能有一个 */
+	int			freeNext;		/* link in freelist chain  空闲链表中的链接 */
 
-	LWLock		content_lock;	/* to lock access to buffer contents */
+	LWLock		content_lock;	/* to lock access to buffer contents  访问缓冲区内容的锁 */
 } BufferDesc;
 
 /*

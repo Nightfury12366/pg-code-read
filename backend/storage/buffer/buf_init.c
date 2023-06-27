@@ -76,11 +76,19 @@ InitBufferPool(void)
 				foundBufCkpt;
 
 	/* Align descriptors to a cacheline boundary. */
+    // 初始化buffer descriptor数组
+    /*
+     * typedef union BufferDescPadded, 因为要对齐，所以有一些pad
+     * 其实本质上是 BufferDesc结构体
+     */
 	BufferDescriptors = (BufferDescPadded *)
 		ShmemInitStruct("Buffer Descriptors",
 						NBuffers * sizeof(BufferDescPadded),
 						&foundDescs);
 
+    /*
+     * Buffer Pool, 一段内存空间，大小为8K*NBuffers
+     */
 	BufferBlocks = (char *)
 		ShmemInitStruct("Buffer Blocks",
 						NBuffers * (Size) BLCKSZ, &foundBufs);
@@ -133,6 +141,9 @@ InitBufferPool(void)
 			 * Initially link all the buffers together as unused. Subsequent
 			 * management of this list is done by freelist.c.
 			 */
+            /*
+             * freelist初始化buf->freeNext = i+1
+             */
 			buf->freeNext = i + 1;
 
 			LWLockInitialize(BufferDescriptorGetContentLock(buf),
