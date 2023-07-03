@@ -51,7 +51,7 @@ typedef uint16 BTCycleId;
  *	NOTE: the BTP_LEAF flag bit is redundant since level==0 could be tested
  *	instead.
  */
-
+// 这些信息存在page的special space中
 typedef struct BTPageOpaqueData
 {
 	BlockNumber btpo_prev;		/* left sibling, or P_NONE if leftmost */

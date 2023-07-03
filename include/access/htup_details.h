@@ -172,11 +172,20 @@ struct HeapTupleHeaderData
 
 #define FIELDNO_HEAPTUPLEHEADERDATA_HOFF 4
 	uint8		t_hoff;			/* sizeof header incl. bitmap, padding */
+    /*到用户数据的偏移量，实际的用户数据（行的列）从t_hoff指示的偏移位置开始， 它必须总是该平台的 MAXALIGN 距离的倍数。*/
 
 	/* ^ - 23 bytes - ^ */
 
 #define FIELDNO_HEAPTUPLEHEADERDATA_BITS 5
 	bits8		t_bits[FLEXIBLE_ARRAY_MEMBER];	/* bitmap of NULLs */
+
+    /*
+     * 空值位图只有在t_infomask中的HEAP_HASNULL位被设置时存在。 如果存在，那么它紧跟在定长的头部后面，并占据足够的字节来容纳
+     * 每个数据列对应的一个位（也就是说，总共t_natts位）。 在这个位的列表中，为 1 的位表示非空，而为 0 的位表示空。如果这个位图
+     * 不存在，那么所有列都被假设为非空的。对象 ID 只有在设置了 t_infomask里面的HEAP_HASOID位时才存在。 如果存在，它正好出现
+     * 在t_hoff边界之前。如果需要对齐t_hoff使之成为 MAXALIGN 的倍数，那么填充将出现在空值位图和对象 ID 之间（这样也保证了
+     * 对象 ID 得到恰当的对齐）。
+     */
 
 	/* MORE DATA FOLLOWS AT END OF STRUCT */
 };

@@ -24,6 +24,14 @@ operations never wait for a page's pin count to drop to zero.  (Anything
 that might need to do such a wait is instead handled by waiting to obtain
 the relation-level lock, which is why you'd better hold one first.)  Pins
 may not be held across transaction boundaries, however.
+对数据页做任何操作的时候要通过++ref_count来pin标识页，没有被pin的缓冲区随时可能被回收
+并重新用于不同的页面，因此对没有被pin的页面进行操作是不安全的。pin操作通过ReadBuffer实现，
+upin通过ReleaseBuffer实现。单个后端进程*多次*对同一个页面进行pin操作是可以的，而且这种操作
+很常见；缓冲区管理器可有效解决该问题。长时间的pin一个页面也是可以的————例如，顺序扫描将pin
+保持在某个页面上，知道处理完该页面上的所有元组，如果扫描是join外部扫描，那么会消耗更多时间。
+相似的，在b树的索引扫描中也可能hold pin当前索引页。这些操作是OK的，因为普通的op从不等待缓冲页
+的ref_count变为0才能操作。（任何可能需要进行这种等待的事情都会通过等待来获得关系级锁来处理，这
+就是为什么你最好先持有一个。）但是，pin不能跨越事务边界。
 
 Buffer content locks: there are two kinds of buffer lock, shared and exclusive,
 which act just as you'd expect: multiple backends can hold shared locks on
@@ -33,6 +41,11 @@ and WRITE locks.)  These locks are intended to be short-term: they should not
 be held for long.  Buffer locks are acquired and released by LockBuffer().
 It will *not* work for a single backend to try to acquire multiple locks on
 the same buffer.  One must pin a buffer before trying to lock it.
+缓冲区的数据页锁（在BufferDesc结构体中的）：Buffer content locks:有两种类型的缓冲区锁，
+共享锁和独占锁，它们的作用正如您所期望的那样：多个后端可以在同一缓冲区上持有共享锁，但独占锁
+可以防止其他人持有共享锁或独占锁。（这有时也被称之为读锁和写锁）。这些锁应该是短期的，它们不应该
+被持有很长时间。缓冲区锁的获取和释放通过LockBuffer()函数操作。同一个后端进程对同一个页锁多次是
+*无效的*，也就是锁是不可重入的。在试图锁一个缓冲页之前必须pin这个页。
 
 Buffer access rules:
 
@@ -40,6 +53,8 @@ Buffer access rules:
 exclusive content lock.  To examine the commit status (XIDs and status bits)
 of a tuple in a shared buffer, one must likewise hold a pin and either shared
 or exclusive lock.
+1.要在页面上扫描元组，必须持有pin和共享或独占内容锁。要检查共享缓冲区中元组的提交状态（XID和状态位）
+，同样必须持有pin和共享或独占锁。
 
 2. Once one has determined that a tuple is interesting (visible to the
 current transaction) one may drop the content lock, yet continue to access
@@ -49,11 +64,17 @@ contains a pointer to tuple data in the shared buffer.  Therefore the
 tuple cannot go away while the pin is held (see rule #5).  Its state could
 change, but that is assumed not to matter after the initial determination
 of visibility is made.
+2.一旦确定元组是感兴趣的（对当前事务可见），就可以丢弃内容锁，但只要持有缓冲pin，就可以继续访问元组
+的数据。这通常是由堆扫描完成的，因为heap_etch返回的元组包含指向共享缓冲区中元组数据的指针。因此，当
+pin被持有时，元组不能被淘汰算法淘汰（参见规则#5）。它的状态可能会改变，但在最初的可见性确定后，这被认为
+无关紧要。
 
 3. To add a tuple or change the xmin/xmax fields of an existing tuple,
 one must hold a pin and an exclusive content lock on the containing buffer.
 This ensures that no one else might see a partially-updated state of the
 tuple while they are doing visibility checks.
+3.要添加一个元组或更改现有元组的xmin/xmax字段，必须在包含缓冲区上持有一个pin和一个独占内容锁。
+这样可以确保其他人在进行可见性检查时，不会看到元组的部分更新状态。
 
 4. It is considered OK to update tuple commit status bits (ie, OR the
 values HEAP_XMIN_COMMITTED, HEAP_XMIN_INVALID, HEAP_XMAX_COMMITTED, or
@@ -68,6 +89,15 @@ great harm is done if they get reset to zero by conflicting updates.
 Note, however, that a tuple is frozen by setting both HEAP_XMIN_INVALID
 and HEAP_XMIN_COMMITTED; this is a critical update and accordingly requires
 an exclusive buffer lock (and it must also be WAL-logged).
+4.更新元组提交状态位(ie, OR the values HEAP_XMIN_COMMITTED, HEAP_XMIN_INVALID,
+HEAP_XMAX_COMMITTED, or HEAP_XMAX_INVALID into t_infomask)，仅持有缓冲器上的内
+容共享锁和pin被认为是可以的。这样是可以的，因为大约在同一时间查看元组的另一个后端会将相同的位
+用“或”运算赋值到到infomask字段中，因为“OR”操作的特性，没有丢失更新的风险，因此几乎没有冲突
+更新的风险；更重要的是，如果确实发生了冲突，这只意味着一位更新将丢失，需要稍后再次进行。这四个
+位只是提示（它们将在pg_xact中事务状态的查找结果缓存在infomask中），因此如果它们被冲突的更
+新重置为零，不会造成太大的伤害。然而，请注意，元组是通过设置HEAP_XMIN_INVALID和
+HEAP_XMIN _COMMITTED来冻结的；这是一个关键的更新，因此需要一个独占的缓冲区锁（而且还必须
+记录WAL）。
 
 5. To physically remove a tuple or compact free space on a page, one
 must hold a pin and an exclusive lock, *and* observe while holding the
@@ -79,6 +109,11 @@ might expect to examine again.  Note that another backend might pin the
 buffer (increment the refcount) while one is performing the cleanup, but
 it won't be able to actually examine the page until it acquires shared
 or exclusive content lock.
+5. 要从物理上移除一个tuple或者压缩可用空间，必须持有pin以及独占锁，并且在持有独占锁的同时
+观察缓冲区的共享引用计数为1（也就是说，没有其他的后端进程持有pin）。如果满足这些条件，则在
+独占锁被删除之前，没有其他后端可以执行页面扫描，并且没有其他后端能够持有对现有元组的引用，该
+引用可能会再次检查。请注意，另一个后端可能会在执行清理时pin缓冲区（增加refcount），但在获得
+共享或独占内容锁定之前，它将无法实际检查页面。
 
 
 Obtaining the lock needed under rule #5 is done by the bufmgr routines
@@ -95,7 +130,13 @@ waiter for pin-count-1 on any particular shared buffer.  This is enough for
 VACUUM's use, since we don't allow multiple VACUUMs concurrently on a single
 relation anyway.  Anyone wishing to obtain a cleanup lock outside of recovery
 or a VACUUM must use the conditional variant of the function.
-
+获取规则#5下所需的锁是由bufmgr例程LockBufferForCleanup()或ConditionalLockBufferForCleanup()
+完成的。它们首先获得一个独占锁，然后检查当前pin数是否为1。如果pin数不是1那么ConditionalLockBufferForCleanup()
+会释放独占锁并返回false，LockBufferForCleanup()会释放独占锁（但不释放pin）且等待另一个后端进程的完成信号，然后
+重试。这个信号会在UnpinBuffer将ref_count减到1时发生。综上所述，在获取到锁之前，此操作可能需要等待很长一段时间，但这
+对并发VACUUM来说并不重要。在现有的实现方案中仅支持单个后端进程等待指定的共享缓冲区ref_count减为1。这对VACUUM来说足够
+了，因为pg不允许多个VACUUMs在单个关系上并发执行，一张表只能一个VACUUMs。任何希望在recovery和VACUUM之外获取cleanup锁
+的进程都必须使用该函数的变体。
 
 Buffer Manager's Internal Locking
 ---------------------------------
@@ -105,6 +146,8 @@ were protected by a single system-wide lock, the BufMgrLock, which
 unsurprisingly proved to be a source of contention.  The new locking scheme
 avoids grabbing system-wide exclusive locks in common code paths.  It works
 like this:
+在PostgreSQL 8.1之前，共享缓冲区管理器本身的所有操作都由一个系统范围的锁BufMgrLock保护，
+这无疑是一个争用源。新的锁定方案避免了在公共代码路径中获取系统范围的独占锁。它是这样工作的：
 
 * There is a system-wide LWLock, the BufMappingLock, that notionally
 protects the mapping from buffer tags (page identifiers) to buffers.
@@ -118,6 +161,11 @@ header fields and changing the buf_table hash table.  The only common
 operation that needs exclusive lock is reading in a page that was not
 in shared buffers already, which will require at least a kernel call
 and usually a wait for I/O, so it will be slow anyway.
+*有一个系统范围的LWLock，即BufMappingLock，它名义上保护从缓冲区标记（页面标识符）到缓冲区（buffer id）的映射。
+（从物理上讲，它可以被认为是保护buf_table.c维护的哈希表。）如果想要康康与一个buf_tag对应的buffer是否存在，那么获取
+BufMappingLock的共享锁就足够。请注意，在释放BufMappingLock之前，必须pin找到的缓冲区（如果有的话）。
+要更改任何缓冲区的页面分配，必须在BufMappingLock上持有独占锁。在调整缓冲区的头字段和更改buf_table哈希表时，必须保持此锁。
+唯一需要独占锁的常见操作是读取不在共享缓冲区中的页面，这至少需要一个内核调用，通常需要等待I/O，所以无论如何都会很慢。
 
 * As of PG 8.2, the BufMappingLock has been split into NUM_BUFFER_PARTITIONS
 separate locks, each guarding a portion of the buffer tag space.  This allows
@@ -126,6 +174,10 @@ that a particular buffer tag belongs to is determined from the low-order
 bits of the tag's hash value.  The rules stated above apply to each partition
 independently.  If it is necessary to lock more than one partition at a time,
 they must be locked in partition-number order to avoid risk of deadlock.
+自从PG 8.2之后，BufMappingLock已被拆分为NUM_BUFFER_PARTITIONS个单独的锁，每个锁保护缓冲区
+空间的一部分。这进一步减少了正常代码路径上的锁竞争。对指定buf_tag的分区是根据buf_tag的哈希值的
+低位来确定的。上述规则独立适用于每个分区。如果需要一次锁定多个分区，则必须按照区分编号顺序锁定这些
+分区，以避免死锁的风险。
 
 * A separate system-wide spinlock, buffer_strategy_lock, provides mutual
 exclusion for operations that access the buffer free list or select
@@ -133,17 +185,26 @@ buffers for replacement.  A spinlock is used here rather than a lightweight
 lock for efficiency; no other locks of any sort should be acquired while
 buffer_strategy_lock is held.  This is essential to allow buffer replacement
 to happen in multiple backends with reasonable concurrency.
+*一个单独的系统范围的spinlock以及buffer_strategy_lock为访问缓冲区空闲列表或选择要替换的缓冲
+区的操作提供互斥。为了提高效率，这里使用的是旋转锁，而不是轻型锁；在持有buffer_strategy_lock时，
+不应获取任何类型的其他锁。这对于允许在具有合理并发性的多个后端中进行缓冲区替换至关重要。
 
 * Each buffer header contains a spinlock that must be taken when examining
 or changing fields of that buffer header.  This allows operations such as
 ReleaseBuffer to make local state changes without taking any system-wide
 lock.  We use a spinlock, not an LWLock, since there are no cases where
 the lock needs to be held for more than a few instructions.
+*每个缓冲区标头都包含一个自旋锁，在检查或更改该缓冲区标头的字段时必须使用该自旋锁。（BufferDesc结构体里的buf_hdr_lock，
+保护ref_count usage_count 等信息，PG9.6 版本将这个锁整合到了pg_atomic_uint32 state变量中）
+这允许诸如ReleaseBuffer之类的操作在不获取任何系统范围的锁定的情况下进行本地状态更改。我们使用的是spinlock，
+而不是LWLock，因为在任何情况下，锁都不需要保存几个指令。
 
 Note that a buffer header's spinlock does not control access to the data
 held within the buffer.  Each buffer header also contains an LWLock, the
 "buffer content lock", that *does* represent the right to access the data
 in the buffer.  It is used per the rules above.
+请注意，缓冲区标头的自旋锁并不控制对缓冲区内数据的访问。每个缓冲区头还包含一个LWLock，即
+“缓冲区内容锁”，*表示访问缓冲区中数据的权利。它是按照上述规则使用的。
 
 There is yet another set of per-buffer LWLocks, the io_in_progress locks,
 that are used to wait for I/O on a buffer to complete.  The process doing
@@ -153,7 +214,10 @@ immediately upon obtaining).  XXX on systems where an LWLock represents
 nontrivial resources, it's fairly annoying to need so many locks.  Possibly
 we could use per-backend LWLocks instead (a buffer header would then contain
 a field to show which backend is doing its I/O).
-
+还有另一组每缓冲区LWLocks，即io_in_progress锁，用于等待缓冲区上的I/O完成。进行读取或写入
+的进程在这段时间内使用独占锁，而需要等待完成的进程则尝试使用共享锁（在获得共享锁后立即释放）。
+XXX在LWLock代表非平凡资源的系统上，需要这么多锁是相当烦人的。我们可能可以使用每个后端的LWLocks
+（然后缓冲区头将包含一个字段来显示哪个后端正在进行I/O）。
 
 Normal Buffer Replacement Strategy
 ----------------------------------
@@ -170,15 +234,26 @@ spinlocks.)  To choose a victim buffer to recycle when there are no free
 buffers available, we use a simple clock-sweep algorithm, which avoids the
 need to take system-wide locks during common operations.  It works like
 this:
+有一个缓冲区的“free list”，这些缓冲区是替换的主要候选者。
+特别是，完全空闲（不包含有效页面）的缓冲区始终在此列表中。如果我们认为不太可能很快需要它们的页面，
+我们也可以在这个列表中添加缓冲区；然而，目前的算法从未做到这一点。该列表使用缓冲区标头（BufferDesc）
+中的字段进行单独链接；我们在全局变量中维护头指针和尾指针。（注意：尽管列表链接在缓冲区标头中，但它们被
+认为是由buffer_strategy_lock保护的，而不是由缓冲区标头自旋锁保护的。）
+当没有可用的缓冲区时，为了选择要回收的受害者缓冲区，我们使用了一个简单的时钟扫描算法，这避免了在常见操作
+期间需要使用系统范围的锁。它是这样工作的：
 
 Each buffer header contains a usage counter, which is incremented (up to a
 small limit value) whenever the buffer is pinned.  (This requires only the
 buffer header spinlock, which would have to be taken anyway to increment the
 buffer reference count, so it's nearly free.)
+每个缓冲区标头都包含一个使用计数器，每当固定缓冲区时，该计数器都会递增（最高可达一个小的限制值）。
+（这只需要缓冲区标头spinlock，无论如何都必须使用它来增加缓冲区引用计数，所以它几乎是免费的。）
 
 The "clock hand" is a buffer index, nextVictimBuffer, that moves circularly
 through all the available buffers.  nextVictimBuffer is protected by the
 buffer_strategy_lock.
+“时钟指针”是一个缓冲区索引nextVictimBuffer，它在所有可用的缓冲区中循环移动。参见freelist.c
+中的BufferStrategyControl结构体。
 
 The algorithm for a process that needs to obtain a victim buffer is:
 
@@ -188,21 +263,31 @@ The algorithm for a process that needs to obtain a victim buffer is:
 buffer_strategy_lock.  If the buffer is pinned or has a nonzero usage count,
 it cannot be used; ignore it go back to step 1.  Otherwise, pin the buffer,
 and return it.
+如果free list非空，把free list的头指针移除。释放buffer_strategy_lock。如果这个buffer是
+被pin的或者有usage count不是0，那么这个buffer就不能被拿来用，忽略这个buffer转而指针后移，找
+下一个buffer。否则，pin这个buffer并返回该buffer。
 
 3. Otherwise, the buffer free list is empty.  Select the buffer pointed to by
 nextVictimBuffer, and circularly advance nextVictimBuffer for next time.
 Release buffer_strategy_lock.
+3.否则，缓冲区空闲列表为空。选择nextVictimBuffer指向的缓冲区，循环前进nextVictimBuffer进行下一次。
+释放buffer_strategy_lock。
 
 4. If the selected buffer is pinned or has a nonzero usage count, it cannot
 be used.  Decrement its usage count (if nonzero), reacquire
 buffer_strategy_lock, and return to step 3 to examine the next buffer.
+如果选到的这个buffer 被pin了或者有非0的usage count，该buffer就不能被使用。usage count--，如果其
+非0的话，再次获取buffer_strategy_lock，并返回步骤3来判别下一个候选牺牲buffer。
 
 5. Pin the selected buffer, and return.
+pin选中的buffer，并返回。
 
 (Note that if the selected buffer is dirty, we will have to write it out
 before we can recycle it; if someone else pins the buffer meanwhile we will
 have to give up and try another buffer.  This however is not a concern
 of the basic select-a-victim-buffer algorithm.)
+（请注意，如果所选缓冲区脏了，我们必须先写盘，然后才能回收；如果其他人同时pin缓冲区，我们将
+不得不放弃并尝试另一个缓冲区。然而，这与基本的选择受害者缓冲区算法无关。）
 
 
 Buffer Ring Replacement Strategy
@@ -217,6 +302,11 @@ using the normal clock sweep algorithm and those buffers are reused for the
 whole scan.  This also implies that much of the write traffic caused by such
 a statement will be done by the backend itself and not pushed off onto other
 processes.
+当运行只需要访问大量页面一次的查询时，例如VACUUM或大型顺序扫描，会使用不同的策略。只被这种扫描
+触摸过的页面不太可能很快再次被需要，因此，不是运行正常的时钟扫描算法并清空整个缓冲区缓存，而是使用
+正常的时钟扫频算法分配一个小的缓冲区环，并且这些缓冲区被重新用于整个扫描。这也意味着，由这样的语句
+引起的大部分写入流量将由后端本身完成，而不会被推到其他进程上。（大表的scan会单独开一个环形缓冲区，
+防止将shared memory的相当多buffer牺牲掉）。
 
 For sequential scans, a 256KB ring is used. That's small enough to fit in L2
 cache, which makes transferring pages from OS cache to shared buffer cache
@@ -231,6 +321,13 @@ Hence this strategy works best for scans that are read-only (or at worst
 update hint bits).  In a scan that modifies every page in the scan, like a
 bulk UPDATE or DELETE, the buffers in the ring will always be dirtied and
 the ring strategy effectively degrades to the normal strategy.
+对于顺序扫描，使用256KB的环。它足够小，可以放在CPU的二级缓存中，这使得从操作系统缓存到共享缓冲
+区缓存的页面传输效率很高。更少通常就足够了，但环必须足够大，以容纳扫描中同时固定的所有页面。
+256KB也应该足以为其他后端留下一个小的缓存踪迹，以加入同步的seq扫描。如果一个环形缓冲区被弄脏，
+并且它的LSN被更新，我们通常必须先写入并刷新WAL，然后才能重用该缓冲区；在这种情况下，我们从环中
+丢弃缓冲区，并（稍后）使用普通时钟扫描算法选择替换。因此，此策略最适用于只读扫描（或最坏的更新提示位）。
+在修改扫描中的每个页面的扫描中，如批量更新或删除，环中的缓冲区将始终被弄脏，并且环策略有效地降级为
+正常策略。
 
 VACUUM uses a 256KB ring like sequential scans, but dirty pages are not
 removed from the ring.  Instead, WAL is flushed if needed to allow reuse of
@@ -238,6 +335,9 @@ the buffers.  Before introducing the buffer ring strategy in 8.3, VACUUM's
 buffers were sent to the freelist, which was effectively a buffer ring of 1
 buffer, resulting in excessive WAL flushing.  Allowing VACUUM to update
 256KB between WAL flushes should be more efficient.
+VACUUM使用256KB环形的顺序扫描，但脏页不会从环形中删除。相反，如果需要，WAL会被刷新，
+以允许缓冲区的重用。在8.3中引入缓冲环策略之前，VACUUM的缓冲区被发送到自由列表，这实际上是一个
+由1个缓冲区组成的缓冲环，导致过度的WAL刷新。允许VACUUM在WAL刷新之间更新256KB应该更有效。
 
 Bulk writes work similarly to VACUUM.  Currently this applies only to
 COPY IN and CREATE TABLE AS SELECT.  (Might it be interesting to make
@@ -247,7 +347,10 @@ Smaller sizes have been shown to result in the COPY blocking too often
 for WAL flushes.  While it's okay for a background vacuum to be slowed by
 doing its own WAL flushing, we'd prefer that COPY not be subject to that,
 so we let it use up a bit more of the buffer arena.
-
+批量写入的工作方式与VACUUM类似。目前，这仅适用于COPY IN和CREATE TABLE AS SELECT。
+（让seqscan UPDATE和DELETE使用bulkwrite策略可能会很有趣吗？）对于大容量写入，我们使用
+16MB的环大小（但不超过shared_buffers的1/8）。较小的大小已被证明会导致WAL刷新的COPY阻塞
+过于频繁。
 
 Background Writer's Processing
 ------------------------------
@@ -258,6 +361,9 @@ To do this, it scans forward circularly from the current position of
 nextVictimBuffer (which it does not change!), looking for buffers that are
 dirty and not pinned nor marked with a positive usage count.  It pins,
 writes, and releases any such buffer.
+后台写进程的设计目的是将很快可能被回收的页面刷盘，从而减轻活跃的后端进程的写负载。该后台写进程
+环形依次扫描nextVictimBuffer指针，寻找dirty且没有被pin并且usage count为正数的页。pin
+write 并释放这些页。
 
 If we can assume that reading nextVictimBuffer is an atomic action, then
 the writer doesn't even need to take buffer_strategy_lock in order to look
@@ -266,14 +372,22 @@ enough to check the dirtybit.  Even without that assumption, the writer
 only needs to take the lock long enough to read the variable value, not
 while scanning the buffers.  (This is a very substantial improvement in
 the contention cost of the writer compared to PG 8.0.)
+如果我们可以假设读取nextVictimBuffer是一个原子操作，那么writer甚至不需要使用buffer_strategy_lock
+来寻找要写入的缓冲区；它仅需要spinlock来为检查dirtybit时提供保护。即使没有这种假设，编写器也只需要占用足
+够长的锁来读取变量值，而不是在扫描缓冲区时。（与PG 8.0相比，这是writer锁竞争成本的一个非常显著的改进。）
 
 The background writer takes shared content lock on a buffer while writing it
 out (and anyone else who flushes buffer contents to disk must do so too).
 This ensures that the page image transferred to disk is reasonably consistent.
 We might miss a hint-bit update or two but that isn't a problem, for the same
 reasons mentioned under buffer access rules.
+后台writer在写入缓冲区时获取缓冲区上的共享内容锁（其他将缓冲区内容刷新到磁盘的人也必须这样做）。
+这样可以确保传输到磁盘的页面图像是合理一致的。我们可能会错过一两个提示位更新，但这不是问题，原因与
+缓冲区访问规则中提到的相同。
 
 As of 8.4, background writer starts during recovery mode when there is
 some form of potentially extended recovery to perform. It performs an
 identical service to normal processing, except that checkpoints it
 writes are technically restartpoints.
+从8.4开始，后台写入程序在恢复模式期间启动，此时需要执行某种形式的潜在扩展恢复。它执行与
+正常处理相同的服务，只是它写入的检查点在技术上是重新启动点。

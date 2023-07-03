@@ -36,10 +36,10 @@ typedef struct
 	 * this isn't a concrete buffer - we only ever increase the value. So, to
 	 * get an actual buffer, it needs to be used modulo NBuffers.
 	 */
-	pg_atomic_uint32 nextVictimBuffer;
+	pg_atomic_uint32 nextVictimBuffer;  // 读取nextVictimBuffer是原子操作
 
-	int			firstFreeBuffer;	/* Head of list of unused buffers */
-	int			lastFreeBuffer; /* Tail of list of unused buffers */
+	int			firstFreeBuffer;	/* Head of list of unused buffers */ // 全局的free list 头部
+	int			lastFreeBuffer; /* Tail of list of unused buffers */ // 全局的free list尾部
 
 	/*
 	 * NOTE: lastFreeBuffer is undefined when firstFreeBuffer is -1 (that is,
@@ -118,6 +118,7 @@ ClockSweepTick(void)
 	 * Atomically move hand ahead one buffer - if there's several processes
 	 * doing this, this can lead to buffers being returned slightly out of
 	 * apparent order.
+	 * 原子式地向前移动一个缓冲区——如果有几个进程这样做，这可能会导致缓冲区的返回稍微不按顺序
 	 */
 	victim =
 		pg_atomic_fetch_add_u32(&StrategyControl->nextVictimBuffer, 1);
@@ -196,6 +197,7 @@ have_free_buffer()
  *
  *	To ensure that no one else can pin the buffer before we do, we must
  *	return the buffer with the buffer header spinlock still held.
+ *	为了确保在我们这样做之前没有其他人可以固定缓冲区，我们在返回缓冲区时仍然保持占有spin lock。
  */
 BufferDesc *
 StrategyGetBuffer(BufferAccessStrategy strategy, uint32 *buf_state)

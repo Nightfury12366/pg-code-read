@@ -21,12 +21,19 @@ additions make it possible detect a concurrent page split, which allows the
 tree to be searched without holding any read locks (except to keep a single
 page from being modified while reading it).
 
+与经典的B树相比，L&Y为每个页面添加了一个右链接指针，到页面的右侧同级。它还为每一页添加了一个“高音键”
+是该页上允许的键的上限（键值的上限）。这两个添加后可以检测并发页面拆分，这允许搜索树时不持有任何读锁
+（除了保留单个页面在阅读时不会被修改）。
+
 When a search follows a downlink to a child page, it compares the page's
 high key with the search key.  If the search key is greater than the high
 key, the page must've been split concurrently, and you must follow the
 right-link to find the new page containing the key range you're looking
 for.  This might need to be repeated, if the page has been split more than
 once.
+当搜索沿着下行链路到达子页面时，它会将页面的高关键字与搜索关键字进行比较。如果搜索关键字大于
+高位关键字，则页面必须同时拆分，并且必须按照正确的链接找到包含您要查找的关键字范围的新页面。
+如果页面已被拆分多次，则可能需要重复此操作。
 
 Differences to the Lehman & Yao algorithm
 -----------------------------------------
