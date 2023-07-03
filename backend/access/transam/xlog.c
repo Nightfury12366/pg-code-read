@@ -587,11 +587,11 @@ typedef struct XLogCtlData
 	XLogCtlInsert Insert;
 
 	/* Protected by info_lck: */
-	XLogwrtRqst LogwrtRqst;
+	XLogwrtRqst LogwrtRqst;/* 表示当前请求写入系统缓冲区或同步写入磁盘的日志位置*/
 	XLogRecPtr	RedoRecPtr;		/* a recent copy of Insert->RedoRecPtr */
 	uint32		ckptXidEpoch;	/* nextXID & epoch of latest checkpoint */
 	TransactionId ckptXid;
-	XLogRecPtr	asyncXactLSN;	/* LSN of newest async commit/abort */
+	XLogRecPtr	asyncXactLSN;	/* LSN of newest async commit/abort *//*最近需要异步提交的日志位置*/
 	XLogRecPtr	replicationSlotMinLSN;	/* oldest LSN needed by any slot */
 
 	XLogSegNo	lastRemovedSegNo;	/* latest removed/recycled XLOG segment */
