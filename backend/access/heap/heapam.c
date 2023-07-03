@@ -2406,18 +2406,24 @@ ReleaseBulkInsertStatePin(BulkInsertState bistate)
 
 /*
  *	heap_insert		- insert tuple into a heap
- *
+ *  插入元组到堆中
  * The new tuple is stamped with current transaction ID and the specified
  * command ID.
+ * 新元组当前使用的事务ID和指定的命令ID标记
  *
  * If the HEAP_INSERT_SKIP_WAL option is specified, the new tuple is not
  * logged in WAL, even for a non-temp relation.  Safe usage of this behavior
  * requires that we arrange that all new tuples go into new pages not
  * containing any tuples from other transactions, and that the relation gets
  * fsync'd before commit.  (See also heap_sync() comments)
+ * 如果指定了HEAP_INSERT_SKIP_WAL选项，那么新的元组就不会记录到WAL中，
+ *   即使对于非临时关系也是如此。
+ *   如希望安全使用此选项,要求我们组织所有的新元组写入不包含来自其他事务的其他元组的新页面，
+ *   并且关系在提交之前得到fsync。(请参阅heap_sync()函数的注释)
  *
  * The HEAP_INSERT_SKIP_FSM option is passed directly to
  * RelationGetBufferForTuple, which see for more info.
+ * HEAP_INSERT_SKIP_FSM选项作为参数直接传给RelationGetBufferForTuple
  *
  * HEAP_INSERT_FROZEN should only be specified for inserts into
  * relfilenodes created during the current subtransaction and when
@@ -2450,6 +2456,10 @@ ReleaseBulkInsertStatePin(BulkInsertState bistate)
  * to match the stored tuple; in particular tup->t_self receives the actual
  * TID where the tuple was stored.  But note that any toasting of fields
  * within the tuple data is NOT reflected into *tup.
+ *  * 返回值是分配给元组的OID(在这里或由调用方指定)，
+ *   如果没有OID，则是InvalidOid。
+ * 更新*tup的头部字段以匹配存储的元组;特别是tup->t_self接收元组存储的实际TID。
+ * 但是请注意，元组数据中的字段的任何toasting都不会反映到*tup中。
  */
 /*
 输入：
@@ -2479,9 +2489,12 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	/*
 	 * Fill in tuple header fields, assign an OID, and toast the tuple if
 	 * necessary.
+	 *填充元组的头部字段,分配OID,如需要处理元组的toast信息
 	 *
 	 * Note: below this point, heaptup is the data we actually intend to store
 	 * into the relation; tup is the caller's original untoasted data.
+	 *  注意:在这一点以下，heaptup是我们实际打算存储到关系中的数据;
+     *   tup是调用方的原始untoasted的数据。
 	 */
     //插入前准备工作，比如设置t_infomask标记等
 	heaptup = heap_prepare_insert(relation, tup, xid, cid, options);
@@ -2489,6 +2502,8 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	/*
 	 * Find buffer to insert this tuple into.  If the page is all visible,
 	 * this will also pin the requisite visibility map page.
+	 * 查找缓冲区并将此元组插入。
+     * 如页面都是可见的，这也将固定必需的可见性映射页面。
 	 */
     //获取相应的buffer，详见上面的子函数解析
 	buffer = RelationGetBufferForTuple(relation, heaptup->t_len,
@@ -2498,17 +2513,24 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	/*
 	 * We're about to do the actual insert -- but check for conflict first, to
 	 * avoid possibly having to roll back work we've just done.
+	 *  即将执行实际的插入操作 -- 但首先要检查冲突,以避免可能的回滚.
 	 *
 	 * This is safe without a recheck as long as there is no possibility of
 	 * another process scanning the page between this check and the insert
 	 * being visible to the scan (i.e., an exclusive buffer content lock is
 	 * continuously held from this point until the tuple insert is visible).
+	 * 不重新检查也是安全的,只要在该检查和插入之间不存在其他正在执行扫描页面的进程
+     *   (页面对于扫描进程是可见的)
 	 *
 	 * For a heap insert, we only need to check for table-level SSI locks. Our
 	 * new tuple can't possibly conflict with existing tuple locks, and heap
 	 * page locks are only consolidated versions of tuple locks; they do not
 	 * lock "gaps" as index page locks do.  So we don't need to specify a
 	 * buffer when making the call, which makes for a faster check.
+	 * 对于堆插入,我们只需要检查表级别的SSI锁.
+     * 新元组不可能与现有的元组锁冲突，堆页锁只是元组锁的合并版本;
+     *   它们不像索引页锁那样锁定“间隙”。
+     * 所以我们在调用时不需要指定缓冲区，这样可以更快地进行检查。
 	 */
     //检查序列化是否冲突
 	CheckForSerializableConflictIn(relation, NULL, InvalidBuffer);
@@ -2532,13 +2554,18 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 
 	/*
 	 * XXX Should we set PageSetPrunable on this page ?
+	 * XXX 在页面上设置PageSetPrunable标记?
 	 *
 	 * The inserting transaction may eventually abort thus making this tuple
 	 * DEAD and hence available for pruning. Though we don't want to optimize
 	 * for aborts, if no other tuple in this page is UPDATEd/DELETEd, the
 	 * aborted tuple will never be pruned until next vacuum is triggered.
+	 * 插入事务可能会中止，从而使这个元组"死亡/DEAD"，需要进行裁剪pruning。
+	 * 虽然我们不想优化事务的中止处理，但是如果本页中没有其他元组被更新/删除，
+	 * 中止的元组将永远不会被删除，直到下一次触发vacuum。
 	 *
 	 * If you do add PageSetPrunable here, add it in heap_xlog_insert too.
+	 * 如果在这里增加PageSetPrunable,也需要在heap_xlog_insert中添加
 	 */
     //设置缓冲块为脏块
 	MarkBufferDirty(buffer);
@@ -2550,13 +2577,14 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 		xl_heap_insert xlrec;
 		xl_heap_header xlhdr;
 		XLogRecPtr	recptr;
-		Page		page = BufferGetPage(buffer);
-		uint8		info = XLOG_HEAP_INSERT;
+		Page		page = BufferGetPage(buffer);//获取相应的Page
+		uint8		info = XLOG_HEAP_INSERT;//XLOG_HEAP_INSERT -> 0x00
 		int			bufflags = 0;
 
 		/*
 		 * If this is a catalog, we need to transmit combocids to properly
 		 * decode, so log that as well.
+		 * 如果这是一个catalog,需要传输combocids进行解码,因此也需要记录到日志中.
 		 */
 		if (RelationIsAccessibleInLogicalDecoding(relation))
 			log_heap_new_cid(relation, heaptup);
@@ -2565,6 +2593,8 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 		 * If this is the single and first tuple on page, we can reinit the
 		 * page instead of restoring the whole thing.  Set flag, and hide
 		 * buffer references from XLogInsert.
+		 * 如果这是页面上独立的第一个元组，我们可以重新初始化页面，而不是恢复整个页面。
+         * 设置标志，并隐藏XLogInsert的缓冲区引用。
 		 */
 		if (ItemPointerGetOffsetNumber(&(heaptup->t_self)) == FirstOffsetNumber &&
 			PageGetMaxOffsetNumber(page) == FirstOffsetNumber)
@@ -2572,9 +2602,9 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 			info |= XLOG_HEAP_INIT_PAGE;
 			bufflags |= REGBUF_WILL_INIT;
 		}
-
+        //Item在页面中的偏移
 		xlrec.offnum = ItemPointerGetOffsetNumber(&heaptup->t_self);
-		xlrec.flags = 0;
+		xlrec.flags = 0;//标记
 		if (all_visible_cleared)
 			xlrec.flags |= XLH_INSERT_ALL_VISIBLE_CLEARED;
 		if (options & HEAP_INSERT_SPECULATIVE)
@@ -2585,6 +2615,9 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 		 * For logical decoding, we need the tuple even if we're doing a full
 		 * page write, so make sure it's included even if we take a full-page
 		 * image. (XXX We could alternatively store a pointer into the FPW).
+		 * 对于逻辑解码,即使正在进行全page write,也需要元组数据,
+         *   以确保该元组在全页面镜像时包含在内.
+         * (XXX 我们也可以将指针存储到FPW中)
 		 */
 		if (RelationIsLogicallyLogged(relation) &&
 			!(options & HEAP_INSERT_NO_LOGICAL))
@@ -2593,8 +2626,8 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 			bufflags |= REGBUF_KEEP_DATA;
 		}
 
-		XLogBeginInsert();
-		XLogRegisterData((char *) &xlrec, SizeOfHeapInsert);
+		XLogBeginInsert();//开始WAL插入
+		XLogRegisterData((char *) &xlrec, SizeOfHeapInsert);//注册数据
 
 		xlhdr.t_infomask2 = heaptup->t_data->t_infomask2;
 		xlhdr.t_infomask = heaptup->t_data->t_infomask;
@@ -2604,19 +2637,22 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 		 * note we mark xlhdr as belonging to buffer; if XLogInsert decides to
 		 * write the whole page to the xlog, we don't need to store
 		 * xl_heap_header in the xlog.
+		 * 注意:我们标记xlhdr属于缓冲区;
+         *   如果XLogInsert确定把整个page写入到xlog中,那么不需要在xlog中存储xl_heap_header
 		 */
-		XLogRegisterBuffer(0, buffer, REGBUF_STANDARD | bufflags);
-		XLogRegisterBufData(0, (char *) &xlhdr, SizeOfHeapHeader);
+		XLogRegisterBuffer(0, buffer, REGBUF_STANDARD | bufflags);//标记
+		XLogRegisterBufData(0, (char *) &xlhdr, SizeOfHeapHeader);//tuple头部
 		/* PG73FORMAT: write bitmap [+ padding] [+ oid] + data */
 		XLogRegisterBufData(0,
 							(char *) heaptup->t_data + SizeofHeapTupleHeader,
-							heaptup->t_len - SizeofHeapTupleHeader);
+							heaptup->t_len - SizeofHeapTupleHeader);//tuple实际数据
 
 		/* filtering by origin on a row level is much more efficient */
+        //根据行级别上的原点进行过滤要有效得多
 		XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
-
+        //插入数据
 		recptr = XLogInsert(RM_HEAP_ID, info);
-
+        //设置LSN
 		PageSetLSN(page, recptr);
 	}
     //完成！
@@ -2631,7 +2667,11 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	 * we abort.  Note it is OK to do this after releasing the buffer, because
 	 * the heaptup data structure is all in local memory, not in the shared
 	 * buffer.
+	 * 如果tuple已缓存，在终止事务时,则将它标记为无效缓存。
+     * 注意，在释放缓冲区之后这样做是可以的，
+     *   因为heaptup数据结构都在本地内存中，而不是在共享缓冲区中。
 	 */
+    //缓存操作后变“无效”的Tuple
 	CacheInvalidateHeapTuple(relation, heaptup, NULL);
 
 	/* Note: speculative insertions are counted too, even if aborted later */
@@ -2641,6 +2681,8 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	/*
 	 * If heaptup is a private copy, release it.  Don't forget to copy t_self
 	 * back to the caller's image, too.
+	 * 如果heaptup是一个私有的拷贝,释放之.
+     *   不要忘了把t_self拷贝回调用者的镜像中.
 	 */
 	if (heaptup != tup)
 	{

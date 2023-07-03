@@ -136,21 +136,27 @@ typedef struct xl_heap_truncate
  * or updated tuple in WAL; we can save a few bytes by reconstructing the
  * fields that are available elsewhere in the WAL record, or perhaps just
  * plain needn't be reconstructed.  These are the fields we must store.
+ * PG不会在WAL中存储插入/更新的元组的全部固定部分(HeapTupleHeaderData);
+ * 我们可以通过重新构造在WAL记录中可用的一些字段来节省一些空间,或者直接扁平化处理。
+ * 这些都是我们必须存储的字段。
+ * 注意:t_hoff可以重新计算，但我们也需要存储它，因为出于对齐的考虑,会被析构。
  */
 typedef struct xl_heap_header
 {
-	uint16		t_infomask2;
-	uint16		t_infomask;
-	uint8		t_hoff;
+	uint16		t_infomask2;//t_infomask2标记
+	uint16		t_infomask;//t_infomask标记
+	uint8		t_hoff;//t_hoff
 } xl_heap_header;
-
+//HeapHeader的大小
 #define SizeOfHeapHeader	(offsetof(xl_heap_header, t_hoff) + sizeof(uint8))
 
 /* This is what we need to know about insert */
+//这是在插入时需要获知的信息
 typedef struct xl_heap_insert
 {
+    //元组在page中的偏移
 	OffsetNumber offnum;		/* inserted tuple's offset */
-	uint8		flags;
+	uint8		flags;          //标记位
 
 	/* xl_heap_header & TUPLE DATA in backup block 0 */
 } xl_heap_insert;

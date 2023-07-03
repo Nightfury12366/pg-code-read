@@ -18,7 +18,7 @@
  * Pointer to a location in the XLOG.  These pointers are 64 bits wide,
  * because we don't want them ever to overflow.
  */
-typedef uint64 XLogRecPtr;//64bit无符号长整型
+typedef uint64 XLogRecPtr;//64bit无符号长整型，这些指针大小为64bit,以确保指针不会溢出.
 
 /*
  * Zero is used indicate an invalid pointer. Bootstrap skips the first possible
